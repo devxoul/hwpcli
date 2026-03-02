@@ -688,4 +688,3 @@ function parseCellAddressForTest(data: Buffer): { col: number; row: number } | n
     row: data.readUInt16LE(commonHeaderSize + 2),
   }
 }
-

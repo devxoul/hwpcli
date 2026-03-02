@@ -441,4 +441,3 @@ function buildTextBoxRecord(level: number, text: string): Buffer {
     buildRecord(TAG.PARA_LINE_SEG, level + 3, buildParaLineSegBuffer()),
   ])
 }
-

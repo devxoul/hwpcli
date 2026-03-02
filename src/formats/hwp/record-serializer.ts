@@ -127,11 +127,11 @@ const DEFAULT_PAGE_CONTENT_WIDTH = 48190
 // in non-Hancom viewers. Values are based on Hancom-generated files for 10pt/160% line spacing.
 export function buildParaLineSegBuffer(segmentWidth: number = DEFAULT_PAGE_CONTENT_WIDTH): Buffer {
   const buf = Buffer.alloc(36)
-  buf.writeUInt32LE(1200, 8)           // lineHeight
-  buf.writeUInt32LE(1200, 12)          // textPartHeight
-  buf.writeUInt32LE(1020, 16)          // distanceFromBaseline
-  buf.writeUInt32LE(960, 20)           // lineSpacing
-  buf.writeUInt32LE(segmentWidth, 28)  // segmentWidth (page content width)
-  buf.writeUInt16LE(0x0006, 34)        // flags
+  buf.writeUInt32LE(1200, 8) // lineHeight
+  buf.writeUInt32LE(1200, 12) // textPartHeight
+  buf.writeUInt32LE(1020, 16) // distanceFromBaseline
+  buf.writeUInt32LE(960, 20) // lineSpacing
+  buf.writeUInt32LE(segmentWidth, 28) // segmentWidth (page content width)
+  buf.writeUInt16LE(0x0006, 34) // flags
   return buf
 }
