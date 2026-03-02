@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url'
 import CFB from 'cfb'
 import { controlIdBuffer } from './control-id'
 import { iterateRecords } from './record-parser'
-import { buildParaLineSegBuffer, buildRecord } from './record-serializer'
+import { buildRecord } from './record-serializer'
 import { compressStream, decompressStream, getCompressionFlag } from './stream-util'
 import { TAG } from './tag-ids'
 
@@ -25,11 +25,11 @@ export async function createHwp(options: CreateHwpOptions = {}): Promise<Buffer>
   CFB.utils.cfb_del(cfb, '/FileHeader')
   CFB.utils.cfb_add(cfb, '/FileHeader', createHwpFileHeader(compressed))
 
-  const { docInfo } = patchDocInfo(cfb, templateCompressed, font, baseFontSize)
+  const { docInfo, bodyCharShapeRef } = patchDocInfo(cfb, templateCompressed, font, baseFontSize)
   CFB.utils.cfb_del(cfb, '/DocInfo')
   CFB.utils.cfb_add(cfb, '/DocInfo', compressed ? compressStream(docInfo) : docInfo)
 
-  const section0 = buildSection0Stream(sectionDef)
+  const section0 = buildSection0Stream(sectionDef, bodyCharShapeRef)
   CFB.utils.cfb_del(cfb, '/BodyText/Section0')
   CFB.utils.cfb_add(cfb, '/BodyText/Section0', compressed ? compressStream(section0) : section0)
 
@@ -100,7 +100,7 @@ function patchDocInfo(
   templateCompressed: boolean,
   font: string | undefined,
   fontSize: number | undefined,
-): { docInfo: Buffer } {
+): { docInfo: Buffer; bodyCharShapeRef: number } {
   const docInfoEntry = CFB.find(cfb, '/DocInfo')
   if (!docInfoEntry?.content) throw new Error('Template missing DocInfo')
   let stream = Buffer.from(docInfoEntry.content)
@@ -108,14 +108,17 @@ function patchDocInfo(
   const parts: Buffer[] = []
   let faceNameIndex = 0
   let charShapeIndex = 0
-  let paraShapeIndex = 0
   let styleIndex = 0
-  let bodyParaShapeData: Buffer | null = null
+  let bodyCharShapeRef = 0
+
   for (const { header, data, offset } of iterateRecords(stream)) {
     const recordBuf = stream.subarray(offset, offset + header.headerSize + header.size)
     if (header.tagId === TAG.FACE_NAME && font) {
-      if (faceNameIndex === 0) {
-        const newFaceName = Buffer.concat([Buffer.from([0x00]), encodeLengthPrefixedUtf16(font)])
+      if (faceNameIndex % 7 === 0) {
+        const encodedName = Buffer.from(font, 'utf16le')
+        const length = Buffer.alloc(2)
+        length.writeUInt16LE(font.length, 0)
+        const newFaceName = Buffer.concat([Buffer.from([0x00]), length, encodedName])
         parts.push(buildRecord(TAG.FACE_NAME, header.level, newFaceName))
       } else {
         parts.push(recordBuf)
@@ -123,144 +126,42 @@ function patchDocInfo(
       faceNameIndex++
       continue
     }
+
     if (header.tagId === TAG.CHAR_SHAPE) {
       if (charShapeIndex === 0) {
         const patched = Buffer.from(data)
-        if (font) patched.writeUInt16LE(0, 0)
-        if (fontSize) patched.writeUInt32LE(fontSize, 42)
+        if (fontSize !== undefined) patched.writeUInt32LE(fontSize, 42)
         parts.push(buildRecord(TAG.CHAR_SHAPE, header.level, patched))
-        // Add 7 heading charShapes after body
-        for (const headingCharShape of buildHeadingCharShapes(data)) {
-          parts.push(buildRecord(TAG.CHAR_SHAPE, header.level, headingCharShape))
-        }
+      } else {
+        parts.push(recordBuf)
       }
       charShapeIndex++
       continue
     }
 
-    if (header.tagId === TAG.PARA_SHAPE) {
-      if (paraShapeIndex === 0) {
-        bodyParaShapeData = Buffer.from(data)
-        parts.push(recordBuf)
-        // Add 7 heading paraShapes after body
-        for (const headingParaShape of buildHeadingParaShapes(bodyParaShapeData)) {
-          parts.push(buildRecord(TAG.PARA_SHAPE, header.level, headingParaShape))
-        }
-      }
-      paraShapeIndex++
-      continue
-    }
-
     if (header.tagId === TAG.STYLE) {
       if (styleIndex === 0) {
-        // Patch body style refs to 0/0
-        const patched = Buffer.from(data)
-        const nameLen = patched.readUInt16LE(0)
-        let refOffset = 2 + nameLen * 2
-        if (refOffset + 2 <= patched.length) {
-          const englishNameLen = patched.readUInt16LE(refOffset)
-          refOffset += 2 + englishNameLen * 2
-        }
-        if (refOffset + 10 <= patched.length) {
-          patched.writeUInt16LE(0, refOffset + 4)
-          patched.writeUInt16LE(0, refOffset + 6)
-        } else if (refOffset + 4 <= patched.length) {
-          patched.writeUInt16LE(0, refOffset)
-          patched.writeUInt16LE(0, refOffset + 2)
-        }
-        parts.push(buildRecord(TAG.STYLE, header.level, patched))
-        // Add 7 heading styles after body
-        for (const headingStyle of buildHeadingStyles()) {
-          parts.push(buildRecord(TAG.STYLE, header.level, headingStyle))
-        }
+        bodyCharShapeRef = parseStyleCharShapeRef(data)
       }
+      parts.push(recordBuf)
       styleIndex++
-      continue
-    }
-
-    if (header.tagId === TAG.ID_MAPPINGS) {
-      const patched = Buffer.from(data)
-      const charShapeByteOffset = 9 * 4
-      const paraShapeByteOffset = 13 * 4
-      const styleByteOffset = 14 * 4
-      if (patched.length >= charShapeByteOffset + 4) {
-        patched.writeUInt32LE(8, charShapeByteOffset)
-      }
-      if (patched.length >= paraShapeByteOffset + 4) {
-        patched.writeUInt32LE(8, paraShapeByteOffset)
-      }
-      if (patched.length >= styleByteOffset + 4) {
-        patched.writeUInt32LE(8, styleByteOffset)
-      }
-      parts.push(buildRecord(header.tagId, header.level, patched))
       continue
     }
 
     parts.push(recordBuf)
   }
 
-  return { docInfo: Buffer.concat(parts) }
+  return { docInfo: Buffer.concat(parts), bodyCharShapeRef }
 }
 
-const HEADING_FONT_SIZES = [2200, 1800, 1600, 1400, 1300, 1200, 1100]
-
-function buildHeadingCharShapes(bodyCharShapeData: Buffer): Buffer[] {
-  return HEADING_FONT_SIZES.map((size) => {
-    const cs = Buffer.from(bodyCharShapeData)
-    cs.writeUInt32LE(size, 42)
-    // Set bold bit (bit 0) in attribute flags at offset 46
-    const attrBits = cs.readUInt32LE(46)
-    cs.writeUInt32LE((attrBits | 0x1) >>> 0, 46)
-    return cs
-  })
-}
-
-function buildHeadingParaShapes(bodyParaShapeData: Buffer): Buffer[] {
-  return Array.from({ length: 7 }, (_, i) => {
-    const level = i + 1
-    const buf = Buffer.from(bodyParaShapeData)
-    const flags = buf.readUInt32LE(0)
-    const cleared = flags & ~(0x7 | (0x7 << 25))
-    const newFlags = cleared | (1 << 2) | (level << 25)
-    buf.writeUInt32LE(newFlags >>> 0, 0)
-    return buf
-  })
-}
-
-function buildHeadingStyles(): Buffer[] {
-  return Array.from({ length: 7 }, (_, i) => {
-    const level = i + 1
-    const styleIndex = level
-    const koreanName = encodeLengthPrefixedUtf16(`\uAC1C\uC694 ${level}`)
-    const englishNameLen = Buffer.alloc(2)
-    englishNameLen.writeUInt16LE(0, 0)
-    const trailing = Buffer.alloc(10)
-    trailing.writeUInt8(0, 0)
-    trailing.writeUInt8(styleIndex, 1)
-    trailing.writeInt16LE(0x0412, 2)
-    trailing.writeUInt16LE(level, 4)
-    trailing.writeUInt16LE(level, 6)
-    trailing.writeUInt16LE(0, 8)
-    return Buffer.concat([koreanName, englishNameLen, trailing])
-  })
-}
-
-function encodeLengthPrefixedUtf16(text: string): Buffer {
-  const value = Buffer.from(text, 'utf16le')
-  const length = Buffer.alloc(2)
-  length.writeUInt16LE(text.length, 0)
-  return Buffer.concat([length, value])
-}
-
-function buildSection0Stream(sectionDef: Buffer): Buffer {
-  const contentWidth = extractContentWidthFromRecords(sectionDef)
+function buildSection0Stream(sectionDef: Buffer, bodyCharShapeRef: number): Buffer {
   const sectionCtrlChar = Buffer.alloc(16)
   sectionCtrlChar.writeUInt16LE(0x0002, 0)
   controlIdBuffer('secd').copy(sectionCtrlChar, 2)
   sectionCtrlChar.writeUInt16LE(0x0002, 14)
   const columnCtrlChar = Buffer.alloc(16)
   columnCtrlChar.writeUInt16LE(0x0002, 0)
-  controlIdBuffer('dloc').copy(columnCtrlChar, 2)
+  controlIdBuffer('cold').copy(columnCtrlChar, 2)
   columnCtrlChar.writeUInt16LE(0x0002, 14)
   const paraText = Buffer.concat([sectionCtrlChar, columnCtrlChar, Buffer.from([0x0d, 0x00])])
   const nChars = paraText.length / 2
@@ -272,8 +173,7 @@ function buildSection0Stream(sectionDef: Buffer): Buffer {
   return Buffer.concat([
     buildRecord(TAG.PARA_HEADER, 0, paraHeader),
     buildRecord(TAG.PARA_TEXT, 1, paraText),
-    buildRecord(TAG.PARA_CHAR_SHAPE, 1, buildParaCharShape(0, nChars)),
-    buildRecord(TAG.PARA_LINE_SEG, 1, buildParaLineSegBuffer(contentWidth)),
+    buildRecord(TAG.PARA_CHAR_SHAPE, 1, buildParaCharShape(bodyCharShapeRef, nChars)),
     sectionDef,
     buildRecord(TAG.CTRL_HEADER, 1, dlocCtrlData),
   ])
@@ -313,16 +213,23 @@ function buildParaCharShape(charShapeRef: number, nChars?: number): Buffer {
   return buf
 }
 
-function extractContentWidthFromRecords(recordStream: Buffer): number {
-  for (const { header, data } of iterateRecords(recordStream)) {
-    if (header.tagId === TAG.PAGE_DEF && data.length >= 16) {
-      const pageWidth = data.readUInt32LE(0)
-      const leftMargin = data.readUInt32LE(8)
-      const rightMargin = data.readUInt32LE(12)
-      return pageWidth - leftMargin - rightMargin
-    }
+function parseStyleCharShapeRef(data: Buffer): number {
+  const nameLen = data.readUInt16LE(0)
+  let offset = 2 + nameLen * 2
+  if (offset + 2 > data.length) return 0
+  const englishNameLen = data.readUInt16LE(offset)
+  offset += 2 + englishNameLen * 2
+  const remaining = data.length - offset
+  if (remaining >= 10) {
+    const primary = data.readUInt16LE(offset + 4)
+    const fallback = data.readUInt16LE(offset + 6)
+    if (primary === 0 && fallback !== 0) return fallback
+    return primary
   }
-  return 48190
+  if (remaining >= 2) {
+    return data.readUInt16LE(offset)
+  }
+  return 0
 }
 
 function createHwpFileHeader(compressed: boolean): Buffer {
