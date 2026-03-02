@@ -34,14 +34,23 @@ export function replaceRecordData(stream: Buffer, recordOffset: number, newData:
   ])
 }
 
-export function buildTableData(rowCount: number, colCount: number): Buffer {
-  // TABLE record: 18 bytes fixed header (flags + rows + cols + spacing + margins),
-  // followed by a variable-length rowSpanCounts array (rowCount × 2 bytes).
-  // Ensure the buffer is large enough for the dynamic portion.
-  const dynamicSize = Math.max(34, 18 + rowCount * 2)
+export function buildTableData(rowCount: number, colCount: number, cellsPerRow?: number[]): Buffer {
+  const dynamicSize = 18 + rowCount * 2 + 4
   const table = Buffer.alloc(dynamicSize)
+  table.writeUInt32LE(0x04000004, 0)
   table.writeUInt16LE(rowCount, 4)
   table.writeUInt16LE(colCount, 6)
+  // Table cell margins (HWPUNIT) — match Hancom defaults
+  table.writeUInt16LE(140, 10) // left
+  table.writeUInt16LE(140, 12) // right
+  table.writeUInt16LE(140, 14) // top
+  table.writeUInt16LE(140, 16) // bottom
+  // rowSpanCounts: number of cells (LIST_HEADER records) per row
+  for (let i = 0; i < rowCount; i++) {
+    const count = cellsPerRow ? cellsPerRow[i] : colCount
+    table.writeUInt16LE(count, 18 + i * 2)
+  }
+  table.writeUInt32LE(1, 18 + rowCount * 2)
   return table
 }
 
@@ -49,27 +58,58 @@ export function buildCellListHeaderData(col: number, row: number, colSpan: numbe
   // Minimum 46 bytes to match well-formed Hancom-created cell LIST_HEADER records.
   // Bytes 0-3: nPara (paragraph count), bytes 4-7: properties,
   // bytes 8-9: col, bytes 10-11: row, bytes 12-13: colSpan, bytes 14-15: rowSpan,
-  // bytes 16+: cell width/height/margins (zeroed for minimal valid record).
+  // bytes 16-19: cell width, bytes 20-23: cell height,
+  // bytes 24-31: cell margins (left, right, top, bottom as uint16),
+  // bytes 32-33: borderFillRef.
   const buf = Buffer.alloc(46)
-  buf.writeInt32LE(1, 0)
-  buf.writeUInt32LE(0, 4)
+  buf.writeInt32LE(1, 0) // nPara
+  buf.writeUInt32LE(0x20, 4) // properties (Hancom standard)
   buf.writeUInt16LE(col, 8)
   buf.writeUInt16LE(row, 10)
   buf.writeUInt16LE(colSpan, 12)
   buf.writeUInt16LE(rowSpan, 14)
   buf.writeUInt32LE(6432, 16) // default cell width (~8cm)
   buf.writeUInt32LE(500, 20) // default cell height (auto-sized)
+  buf.writeUInt16LE(510, 24) // margin left
+  buf.writeUInt16LE(510, 26) // margin right
+  buf.writeUInt16LE(141, 28) // margin top
+  buf.writeUInt16LE(141, 30) // margin bottom
+  buf.writeUInt16LE(2, 32) // borderFillRef (1-based; #2 = thin solid border)
+  buf.writeUInt32LE(6432, 34)
   return buf
 }
+// Counter for generating unique table instance IDs within a process
+let tableInstanceIdCounter = 0
 
 export function buildTableCtrlHeaderData(): Buffer {
-  // Minimum 44 bytes to match well-formed Hancom-created table CTRL_HEADER records.
-  // Bytes 0-3: control ID ('tbl ' in reversed byte order),
-  // bytes 4+: control properties (zeroed for minimal valid record).
-  // Bytes 16-19: width (HWPUNIT), bytes 20-23: height (HWPUNIT).
+  // Field layout (ShapeObject common header):
+  //   [0-3]   Control ID ('tbl ' reversed byte order)
+  //   [4-7]   Properties: object placement/wrapping flags
+  //   [8-11]  Y offset (int32)
+  //   [12-15] X offset (int32)
+  //   [16-19] Width (uint32, HWPUNIT)
+  //   [20-23] Height (uint32, HWPUNIT)
+  //   [24-25] Z-order (int16)
+  //   [26-27] Outer spacing/unknown (uint16)
+  //   [28-29] Outer margin left (uint16)
+  //   [30-31] Outer margin right (uint16)
+  //   [32-33] Outer margin top (uint16)
+  //   [34-35] Outer margin bottom (uint16)
+  //   [36-39] Instance ID (uint32, unique per object)
+  //   [40-41] Prevent page break (int16)
+  //   [42-43] Description text length (uint16)
   const buf = Buffer.alloc(44)
   controlIdBuffer('tbl ').copy(buf, 0)
+  // Properties: 0x082a2211 = standard Hancom table object properties
+  // (likeText=1, square wrap, flowWithText, affectLSpacing, protectSize)
+  buf.writeUInt32LE(0x082a2211, 4)
   buf.writeUInt32LE(14100, 16) // default table width (~17.6cm, full page width)
   buf.writeUInt32LE(1000, 20) // default table height (auto-sized by Hancom)
+  buf.writeUInt16LE(140, 28) // outer margin left
+  buf.writeUInt16LE(140, 30) // outer margin right
+  buf.writeUInt16LE(140, 32) // outer margin top
+  buf.writeUInt16LE(140, 34) // outer margin bottom
+  // Instance ID: unique per table object, generated sequentially
+  buf.writeUInt32LE(++tableInstanceIdCounter >>> 0, 36)
   return buf
 }
