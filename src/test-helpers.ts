@@ -3,6 +3,7 @@ import JSZip from 'jszip'
 import { controlIdBuffer } from '@/formats/hwp/control-id'
 import {
   buildCellListHeaderData,
+  buildParaLineSegBuffer,
   buildRecord,
   buildTableCtrlHeaderData,
   buildTableData,
@@ -306,7 +307,7 @@ function buildSection0Stream(paragraphs: string[], tables: TestTable[], textBoxe
     records.push(buildRecord(TAG.PARA_HEADER, 0, Buffer.alloc(0)))
     records.push(buildRecord(TAG.PARA_CHAR_SHAPE, 1, tableParaCharShape))
     records.push(buildRecord(TAG.PARA_TEXT, 1, encodeUint16([0x000b])))
-    records.push(buildRecord(TAG.PARA_LINE_SEG, 1, buildParaLineSeg()))
+    records.push(buildRecord(TAG.PARA_LINE_SEG, 1, buildParaLineSegBuffer()))
     records.push(buildRecord(TAG.CTRL_HEADER, 1, buildTableCtrlHeaderData()))
     records.push(buildRecord(TAG.TABLE, 2, buildTableData(table.rows.length, table.rows[0]?.length ?? 0)))
     for (let rowIndex = 0; rowIndex < table.rows.length; rowIndex++) {
@@ -321,7 +322,7 @@ function buildSection0Stream(paragraphs: string[], tables: TestTable[], textBoxe
         records.push(buildRecord(TAG.PARA_HEADER, 3, cellParaHeader))
         records.push(buildRecord(TAG.PARA_CHAR_SHAPE, 3, cellParaCharShape))
         records.push(buildRecord(TAG.PARA_TEXT, 3, cellTextData))
-        records.push(buildRecord(TAG.PARA_LINE_SEG, 3, buildParaLineSeg()))
+        records.push(buildRecord(TAG.PARA_LINE_SEG, 3, buildParaLineSegBuffer()))
       }
     }
   }
@@ -347,7 +348,7 @@ function buildParagraphRecords(text: string): Buffer {
     buildRecord(TAG.PARA_HEADER, 0, paraHeader),
     buildRecord(TAG.PARA_CHAR_SHAPE, 1, paraCharShape),
     buildRecord(TAG.PARA_TEXT, 1, textData),
-    buildRecord(TAG.PARA_LINE_SEG, 1, buildParaLineSeg()),
+    buildRecord(TAG.PARA_LINE_SEG, 1, buildParaLineSegBuffer()),
   ])
 }
 
@@ -361,9 +362,10 @@ export function buildMergedTable(rows: MergedTableRow[], colCount: number, rowCo
   records.push(buildRecord(TAG.PARA_HEADER, 0, tableParaHeader))
   records.push(buildRecord(TAG.PARA_CHAR_SHAPE, 1, tableParaCharShape))
   records.push(buildRecord(TAG.PARA_TEXT, 1, encodeUint16([0x000b])))
-  records.push(buildRecord(TAG.PARA_LINE_SEG, 1, buildParaLineSeg()))
+  records.push(buildRecord(TAG.PARA_LINE_SEG, 1, buildParaLineSegBuffer()))
   records.push(buildRecord(TAG.CTRL_HEADER, 1, buildTableCtrlHeaderData()))
-  records.push(buildRecord(TAG.TABLE, 2, buildTableData(rowCount, colCount)))
+  const cellsPerRow = rows.map((row) => row.length)
+  records.push(buildRecord(TAG.TABLE, 2, buildTableData(rowCount, colCount, cellsPerRow)))
 
   for (let rowIndex = 0; rowIndex < rows.length; rowIndex++) {
     for (let colIndex = 0; colIndex < rows[rowIndex].length; colIndex++) {
@@ -382,7 +384,7 @@ export function buildMergedTable(rows: MergedTableRow[], colCount: number, rowCo
       records.push(buildRecord(TAG.PARA_HEADER, 3, cellParaHeader))
       records.push(buildRecord(TAG.PARA_CHAR_SHAPE, 3, cellParaCharShape))
       records.push(buildRecord(TAG.PARA_TEXT, 3, cellTextData))
-      records.push(buildRecord(TAG.PARA_LINE_SEG, 3, buildParaLineSeg()))
+      records.push(buildRecord(TAG.PARA_LINE_SEG, 3, buildParaLineSegBuffer()))
     }
   }
 
@@ -436,16 +438,6 @@ function buildTextBoxRecord(level: number, text: string): Buffer {
     buildRecord(TAG.PARA_HEADER, level + 2, paraHeader),
     buildRecord(TAG.PARA_CHAR_SHAPE, level + 3, paraCharShape),
     buildRecord(TAG.PARA_TEXT, level + 3, textData),
-    buildRecord(TAG.PARA_LINE_SEG, level + 3, buildParaLineSeg()),
+    buildRecord(TAG.PARA_LINE_SEG, level + 3, buildParaLineSegBuffer()),
   ])
-}
-
-function buildParaLineSeg(): Buffer {
-  const buf = Buffer.alloc(36)
-  buf.writeUInt32LE(0x000009a0, 8)
-  buf.writeUInt32LE(0x000009a0, 12)
-  buf.writeUInt32LE(0x000007f8, 16)
-  buf.writeInt32LE(-0x00000690, 20)
-  buf.writeUInt16LE(0x0006, 34)
-  return buf
 }

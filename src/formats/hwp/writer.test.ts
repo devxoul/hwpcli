@@ -4,7 +4,7 @@ import CFB from 'cfb'
 import { buildCellListHeaderData, buildMergedTable, createTestHwpBinary, createTestHwpCfb } from '../../test-helpers'
 import { loadHwp } from './reader'
 import { iterateRecords } from './record-parser'
-import { buildRecord, buildTableCtrlHeaderData } from './record-serializer'
+import { buildParaLineSegBuffer, buildRecord, buildTableCtrlHeaderData, buildTableData } from './record-serializer'
 import { decompressStream, getCompressionFlag } from './stream-util'
 import { TAG } from './tag-ids'
 import * as validatorModule from './validator'
@@ -577,9 +577,7 @@ async function createTestHwpBinaryWithSection0(section0: Buffer): Promise<Buffer
 
 function buildTableWithAddressedListHeaders(cells: string[]): Buffer {
   const records: Buffer[] = []
-  const tableData = Buffer.alloc(34)
-  tableData.writeUInt16LE(1, 4)
-  tableData.writeUInt16LE(cells.length, 6)
+  const tableData = buildTableData(1, cells.length, [cells.length])
 
   const tableParaCharShape = Buffer.alloc(6)
   tableParaCharShape.writeUInt16LE(0, 4)
@@ -588,7 +586,7 @@ function buildTableWithAddressedListHeaders(cells: string[]): Buffer {
   records.push(buildRecord(TAG.PARA_HEADER, 0, tableParaHeader))
   records.push(buildRecord(TAG.PARA_CHAR_SHAPE, 1, tableParaCharShape))
   records.push(buildRecord(TAG.PARA_TEXT, 1, Buffer.from([0x0b, 0x00])))
-  records.push(buildRecord(TAG.PARA_LINE_SEG, 1, buildParaLineSegDataForTest()))
+  records.push(buildRecord(TAG.PARA_LINE_SEG, 1, buildParaLineSegBuffer()))
   records.push(buildRecord(TAG.CTRL_HEADER, 1, buildTableCtrlHeaderData()))
   records.push(buildRecord(TAG.TABLE, 2, tableData))
 
@@ -603,7 +601,7 @@ function buildTableWithAddressedListHeaders(cells: string[]): Buffer {
     records.push(buildRecord(TAG.PARA_HEADER, 3, cellParaHeader))
     records.push(buildRecord(TAG.PARA_CHAR_SHAPE, 3, cellParaCharShape))
     records.push(buildRecord(TAG.PARA_TEXT, 3, cellTextData))
-    records.push(buildRecord(TAG.PARA_LINE_SEG, 3, buildParaLineSegDataForTest()))
+    records.push(buildRecord(TAG.PARA_LINE_SEG, 3, buildParaLineSegBuffer()))
   }
 
   return Buffer.concat(records)
@@ -619,9 +617,19 @@ function buildSameLevelTable(rows: string[][], colCount: number, rowCount: numbe
   records.push(buildRecord(TAG.PARA_HEADER, 0, tableParaHeader))
   records.push(buildRecord(TAG.PARA_CHAR_SHAPE, 1, tableParaCharShape))
   records.push(buildRecord(TAG.PARA_TEXT, 1, Buffer.from([0x0b, 0x00])))
-  records.push(buildRecord(TAG.PARA_LINE_SEG, 1, buildParaLineSegDataForTest()))
+  records.push(buildRecord(TAG.PARA_LINE_SEG, 1, buildParaLineSegBuffer()))
   records.push(buildRecord(TAG.CTRL_HEADER, 1, buildTableCtrlHeaderData()))
-  records.push(buildRecord(TAG.TABLE, 2, buildTableDataLocal(rowCount, colCount)))
+  records.push(
+    buildRecord(
+      TAG.TABLE,
+      2,
+      buildTableData(
+        rowCount,
+        colCount,
+        rows.map((r) => r.length),
+      ),
+    ),
+  )
 
   for (let rowIndex = 0; rowIndex < rows.length; rowIndex++) {
     for (let colIndex = 0; colIndex < rows[rowIndex].length; colIndex++) {
@@ -636,18 +644,11 @@ function buildSameLevelTable(rows: string[][], colCount: number, rowCount: numbe
       records.push(buildRecord(TAG.PARA_HEADER, 2, cellParaHeader))
       records.push(buildRecord(TAG.PARA_CHAR_SHAPE, 2, cellParaCharShape))
       records.push(buildRecord(TAG.PARA_TEXT, 3, cellTextData))
-      records.push(buildRecord(TAG.PARA_LINE_SEG, 3, buildParaLineSegDataForTest()))
+      records.push(buildRecord(TAG.PARA_LINE_SEG, 3, buildParaLineSegBuffer()))
     }
   }
 
   return Buffer.concat(records)
-}
-
-function buildTableDataLocal(rowCount: number, colCount: number): Buffer {
-  const table = Buffer.alloc(34)
-  table.writeUInt16LE(rowCount, 4)
-  table.writeUInt16LE(colCount, 6)
-  return table
 }
 
 function collectTableCellTexts(stream: Buffer): Array<{ col: number | null; row: number | null; text: string }> {
@@ -686,14 +687,4 @@ function parseCellAddressForTest(data: Buffer): { col: number; row: number } | n
     col: data.readUInt16LE(commonHeaderSize),
     row: data.readUInt16LE(commonHeaderSize + 2),
   }
-}
-
-function buildParaLineSegDataForTest(): Buffer {
-  const buf = Buffer.alloc(36)
-  buf.writeUInt32LE(0x000009a0, 8)
-  buf.writeUInt32LE(0x000009a0, 12)
-  buf.writeUInt32LE(0x000007f8, 16)
-  buf.writeInt32LE(-0x00000690, 20)
-  buf.writeUInt16LE(0x0006, 34)
-  return buf
 }

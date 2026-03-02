@@ -5,6 +5,7 @@ import { readControlId } from './control-id'
 import { iterateRecords } from './record-parser'
 import {
   buildCellListHeaderData,
+  buildParaLineSegBuffer,
   buildRecord,
   buildTableCtrlHeaderData,
   buildTableData,
@@ -255,43 +256,44 @@ function groupOperationsBySection(operations: EditOperation[]): Map<number, Sect
 }
 
 function appendTableRecords(stream: Buffer, op: SectionAddTableOperation): Buffer {
-  const tableParaHeader = Buffer.alloc(24)
-  tableParaHeader.writeUInt32LE(1, 0)
-  tableParaHeader.writeUInt32LE(1, 16)
+  const tableParaHeader = buildTableParagraphHeaderData(9, false, 0x0818, 2)
 
-  const tableParaLineSeg = buildParaLineSegData()
+  const contentWidth = extractContentWidthFromStream(stream)
+  const tableParaLineSeg = buildParaLineSegBuffer(contentWidth)
   const cellRecords: Buffer[] = []
 
   for (let row = 0; row < op.rows; row++) {
     for (let col = 0; col < op.cols; col++) {
       const cellText = op.data?.[row]?.[col] ?? ''
       const cellTextData = Buffer.from(cellText, 'utf16le')
-      const cellParaHeader = Buffer.alloc(24)
-      cellParaHeader.writeUInt32LE((0x80000000 | (cellTextData.length / 2)) >>> 0, 0)
+      const cellParaHeader = buildTableParagraphHeaderData(cellTextData.length / 2 + 1, true)
       const cellParaCharShape = Buffer.alloc(8)
       cellParaCharShape.writeUInt32LE(0, 0) // position
       cellParaCharShape.writeUInt32LE(0, 4) // charShapeRef = 0 (default)
-      const cellParaLineSeg = buildParaLineSegData()
+      const cellParaLineSeg = buildParaLineSegBuffer(contentWidth)
       cellRecords.push(buildRecord(TAG.LIST_HEADER, 2, buildCellListHeaderData(col, row, 1, 1)))
-      cellRecords.push(buildRecord(TAG.PARA_HEADER, 3, cellParaHeader))
-      cellRecords.push(buildRecord(TAG.PARA_TEXT, 3, cellTextData))
+      cellRecords.push(buildRecord(TAG.PARA_HEADER, 2, cellParaHeader))
+      const cellTextWithEnd = Buffer.concat([cellTextData, encodeUint16([0x000d])])
+      cellRecords.push(buildRecord(TAG.PARA_TEXT, 3, cellTextWithEnd))
       cellRecords.push(buildRecord(TAG.PARA_CHAR_SHAPE, 3, cellParaCharShape))
       cellRecords.push(buildRecord(TAG.PARA_LINE_SEG, 3, cellParaLineSeg))
     }
   }
 
-  const tableParaCharShape = Buffer.alloc(8)
-  tableParaCharShape.writeUInt32LE(0, 0) // position
-  tableParaCharShape.writeUInt32LE(0, 4) // charShapeRef = 0 (default)
-
+  // Table paragraph PARA_TEXT: extended control for 'tbl ' (8 uint16) + paragraph end (0x000d)
+  const tblParaText = encodeUint16([0x000b, 0x6c20, 0x7462, 0x0000, 0x0000, 0x0000, 0x0000, 0x000b, 0x000d])
+  // Two char shape entries: one for control chars, one for paragraph end
+  const tableParaCharShape = Buffer.alloc(16)
+  tableParaCharShape.writeUInt32LE(0, 0) // pos=0
+  tableParaCharShape.writeUInt32LE(0, 4) // charShapeRef=0
+  tableParaCharShape.writeUInt32LE(8, 8) // pos=8 (paragraph end char)
+  tableParaCharShape.writeUInt32LE(0, 12) // charShapeRef=0
   if (op.position === 'end') {
     const result = clearLastParagraphBit(stream)
-    const lastTableParaHeader = Buffer.alloc(24)
-    lastTableParaHeader.writeUInt32LE((0x80000000 | 1) >>> 0, 0)
-    lastTableParaHeader.writeUInt32LE(1, 16)
+    const lastTableParaHeader = buildTableParagraphHeaderData(9, true, 0x0818, 2)
     const tableRecords = Buffer.concat([
       buildRecord(TAG.PARA_HEADER, 0, lastTableParaHeader),
-      buildRecord(TAG.PARA_TEXT, 1, encodeUint16([0x000b])),
+      buildRecord(TAG.PARA_TEXT, 1, tblParaText),
       buildRecord(TAG.PARA_CHAR_SHAPE, 1, tableParaCharShape),
       buildRecord(TAG.PARA_LINE_SEG, 1, tableParaLineSeg),
       buildRecord(TAG.CTRL_HEADER, 1, buildTableCtrlHeaderData()),
@@ -307,7 +309,7 @@ function appendTableRecords(stream: Buffer, op: SectionAddTableOperation): Buffe
 
   const tableRecords = Buffer.concat([
     buildRecord(TAG.PARA_HEADER, 0, tableParaHeader),
-    buildRecord(TAG.PARA_TEXT, 1, encodeUint16([0x000b])),
+    buildRecord(TAG.PARA_TEXT, 1, tblParaText),
     buildRecord(TAG.PARA_CHAR_SHAPE, 1, tableParaCharShape),
     buildRecord(TAG.PARA_LINE_SEG, 1, tableParaLineSeg),
     buildRecord(TAG.CTRL_HEADER, 1, buildTableCtrlHeaderData()),
@@ -316,6 +318,20 @@ function appendTableRecords(stream: Buffer, op: SectionAddTableOperation): Buffe
   ])
 
   return spliceTableRecords(stream, op.paragraph, op.position, tableRecords)
+}
+
+function buildTableParagraphHeaderData(nChars: number, isLast: boolean, controlMask = 0, charShapeCount = 1): Buffer {
+  const paraHeader = Buffer.alloc(22)
+  const nCharsField = (nChars & 0x7fffffff) | (isLast ? 0x80000000 : 0)
+  paraHeader.writeUInt32LE(nCharsField >>> 0, 0)
+  paraHeader.writeUInt32LE(controlMask >>> 0, 4)
+  paraHeader.writeUInt16LE(0, 8)
+  paraHeader.writeUInt16LE(0, 10)
+  paraHeader.writeUInt16LE(charShapeCount, 12)
+  paraHeader.writeUInt16LE(0, 14)
+  paraHeader.writeUInt16LE(1, 16)
+  paraHeader.writeUInt32LE(0, 18)
+  return paraHeader
 }
 
 function resolveStyleRefs(
@@ -419,7 +435,9 @@ function appendParagraphRecords(
   paraCharShapeData.writeUInt32LE(0, 0)
   paraCharShapeData.writeUInt32LE(charShapeRef, 4)
 
-  const paraLineSegData = buildParaLineSegData()
+  const contentWidth = extractContentWidthFromStream(stream)
+
+  const paraLineSegData = buildParaLineSegBuffer(contentWidth)
 
   const newRecords = Buffer.concat([
     buildRecord(TAG.PARA_HEADER, 0, paraHeaderData),
@@ -1158,14 +1176,16 @@ function encodeUint16(values: number[]): Buffer {
   return output
 }
 
-function buildParaLineSegData(): Buffer {
-  const buf = Buffer.alloc(36)
-  buf.writeUInt32LE(0x000009a0, 8)
-  buf.writeUInt32LE(0x000009a0, 12)
-  buf.writeUInt32LE(0x000007f8, 16)
-  buf.writeInt32LE(-0x00000690, 20)
-  buf.writeUInt16LE(0x0006, 34)
-  return buf
+function extractContentWidthFromStream(stream: Buffer): number {
+  for (const { header, data } of iterateRecords(stream)) {
+    if (header.tagId === TAG.PAGE_DEF && data.length >= 16) {
+      const pageWidth = data.readUInt32LE(0)
+      const leftMargin = data.readUInt32LE(8)
+      const rightMargin = data.readUInt32LE(12)
+      return pageWidth - leftMargin - rightMargin
+    }
+  }
+  return 48190
 }
 
 export function getEntryBuffer(cfb: CFB.CFB$Container, path: string): Buffer {
