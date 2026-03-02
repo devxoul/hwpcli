@@ -1,6 +1,7 @@
 import { readFile, writeFile } from 'node:fs/promises'
 import CFB from 'cfb'
 import type { EditOperation } from '@/shared/edit-types'
+import { writeCfb } from './cfb-writer'
 import { getEntryBuffer, mutateHwpCfb } from './mutator'
 import { getCompressionFlag } from './stream-util'
 import { validateHwpBuffer } from './validator'
@@ -16,7 +17,7 @@ export async function editHwp(filePath: string, operations: EditOperation[]): Pr
 
   mutateHwpCfb(cfb, operations, compressed)
 
-  const buffer = Buffer.from(CFB.write(cfb, { type: 'buffer' }))
+  const buffer = writeCfb(cfb)
 
   try {
     const result = await validateHwpBuffer(buffer)
