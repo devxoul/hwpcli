@@ -116,61 +116,35 @@ describe('createHwp', () => {
   })
 
   describe('heading styles', () => {
-    it('creates 8 charShapes (body + 7 headings)', async () => {
+    it('preserves 7 template charShapes', async () => {
       const filePath = createTempFilePath()
       const fixture = await createHwp()
       await Bun.write(filePath, fixture)
 
       const doc = await loadHwp(filePath)
-      expect(doc.header.charShapes).toHaveLength(8)
-
-      // Body charShape at index 0 is not bold
-      expect(doc.header.charShapes[0]?.bold).toBe(false)
-
-      // Heading charShapes 1-7 are all bold with decreasing font sizes
-      const expectedSizes = [22, 18, 16, 14, 13, 12, 11]
-      for (let i = 1; i <= 7; i++) {
-        expect(doc.header.charShapes[i]?.bold).toBe(true)
-        expect(doc.header.charShapes[i]?.fontSize).toBe(expectedSizes[i - 1])
-      }
+      expect(doc.header.charShapes).toHaveLength(7)
     })
 
-    it('creates 8 paraShapes (body + 7 headings with heading levels)', async () => {
+    it('preserves 19 template paraShapes', async () => {
       const filePath = createTempFilePath()
       const fixture = await createHwp()
       await Bun.write(filePath, fixture)
 
       const doc = await loadHwp(filePath)
-      expect(doc.header.paraShapes).toHaveLength(8)
-
-      // Body paraShape has no heading level
-      expect(doc.header.paraShapes[0]?.headingLevel).toBeUndefined()
-
-      // Heading paraShapes 1-7 have heading levels 1-7
-      for (let i = 1; i <= 7; i++) {
-        expect(doc.header.paraShapes[i]?.headingLevel).toBe(i)
-      }
+      expect(doc.header.paraShapes).toHaveLength(19)
     })
 
-    it('creates 8 styles (Normal + 개요 1-7)', async () => {
+    it('preserves 21 template styles', async () => {
       const filePath = createTempFilePath()
       const fixture = await createHwp()
       await Bun.write(filePath, fixture)
 
       const doc = await loadHwp(filePath)
-      expect(doc.header.styles).toHaveLength(8)
+      expect(doc.header.styles).toHaveLength(21)
 
-      // Style 0 is Normal/바탕글
-      const normalStyle = doc.header.styles[0]
-      expect(normalStyle?.charShapeRef).toBe(0)
-      expect(normalStyle?.paraShapeRef).toBe(0)
-
-      // Styles 1-7 are 개요 1 through 개요 7
       for (let i = 1; i <= 7; i++) {
-        const style = doc.header.styles[i]
+        const style = doc.header.styles.find((item) => item.name === `개요 ${i}`)
         expect(style?.name).toBe(`개요 ${i}`)
-        expect(style?.charShapeRef).toBe(i)
-        expect(style?.paraShapeRef).toBe(i)
       }
     })
 
@@ -208,14 +182,14 @@ describe('createHwp', () => {
         }
       }
 
-      expect(paraShapeSizes.length).toBeGreaterThanOrEqual(8)
+      expect(paraShapeSizes.length).toBeGreaterThanOrEqual(19)
       expect(paraShapeSizes[0]).toBe(58)
-      for (const size of paraShapeSizes.slice(1, 8)) {
+      for (const size of paraShapeSizes.slice(1, 19)) {
         expect(size).toBe(58)
       }
 
-      expect(styleTrailingSizes.length).toBeGreaterThanOrEqual(8)
-      for (const size of styleTrailingSizes.slice(1, 8)) {
+      expect(styleTrailingSizes.length).toBeGreaterThanOrEqual(21)
+      for (const size of styleTrailingSizes.slice(1, 21)) {
         expect(size).toBeGreaterThanOrEqual(10)
       }
 
@@ -226,7 +200,22 @@ describe('createHwp', () => {
         section0 = Buffer.from(decompressStream(section0))
       }
 
-      expect(section0.includes(Buffer.from('cold', 'ascii'))).toBe(true)
+      const sectionRecords = [...iterateRecords(section0)]
+      const paraText = sectionRecords.find(({ header }) => header.tagId === TAG.PARA_TEXT && header.level === 1)
+      expect(paraText).toBeDefined()
+      expect(paraText!.data.includes(Buffer.from('dloc', 'ascii'))).toBe(true)
+
+      const lineSeg = sectionRecords.find(({ header }) => header.tagId === TAG.PARA_LINE_SEG && header.level === 1)
+      expect(lineSeg).toBeUndefined()
+
+      const paraCharShape = sectionRecords.find(
+        ({ header }) => header.tagId === TAG.PARA_CHAR_SHAPE && header.level === 1,
+      )
+      expect(paraCharShape).toBeDefined()
+      const charShapeRef = paraCharShape!.data.readUInt32LE(4)
+      expect(charShapeRef).toBeGreaterThanOrEqual(0)
+      expect(charShapeRef).toBeLessThan(7)
+
       const dlocCtrlHeader = [...iterateRecords(section0)].find(
         ({ header, data }) =>
           header.tagId === TAG.CTRL_HEADER && header.level === 1 && data.subarray(0, 4).toString('ascii') === 'dloc',
