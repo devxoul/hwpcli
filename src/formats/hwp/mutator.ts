@@ -456,7 +456,8 @@ function appendParagraphRecords(
   paraHeaderData.writeUInt32LE(nChars & 0x7fffffff, 0)
   paraHeaderData.writeUInt16LE(paraShapeRef, 8)
   paraHeaderData.writeUInt8(styleIndex, 10)
-  paraHeaderData.writeUInt32LE(1, 16)
+  paraHeaderData.writeUInt16LE(1, 12)
+  paraHeaderData.writeUInt16LE(1, 16)
 
   const paraTextData = isEmpty ? null : Buffer.concat([textData, Buffer.from([0x0d, 0x00])])
 
@@ -901,6 +902,7 @@ function applySetFormat(
   }
 
   sectionStream = replaceRecordData(sectionStream, paraCharShapeMatch.offset, patchedParaCharShape)
+  updateParaHeaderCharShapeCount(sectionStream, paragraphIndex, patchedParaCharShape.length / 8)
 
   CFB.utils.cfb_add(cfb, docInfoPath, compressed ? compressStream(docInfoStream) : docInfoStream)
   CFB.utils.cfb_add(cfb, sectionPath, compressed ? compressStream(sectionStream) : sectionStream)
@@ -935,6 +937,22 @@ function updateParaHeaderNChars(
     const original = stream.readUInt32LE(paraHeaderDataOffset)
     const flags = original & 0x80000000
     stream.writeUInt32LE((flags | (nChars & 0x7fffffff)) >>> 0, paraHeaderDataOffset)
+  }
+}
+
+function updateParaHeaderCharShapeCount(stream: Buffer, paragraphIndex: number, charShapeCount: number): void {
+  let paraIdx = -1
+  for (const { header, offset } of iterateRecords(stream)) {
+    if (header.tagId === TAG.PARA_HEADER && header.level === 0) {
+      paraIdx++
+      if (paraIdx === paragraphIndex) {
+        const dataOffset = offset + header.headerSize
+        if (header.size >= 14) {
+          stream.writeUInt16LE(charShapeCount, dataOffset + 12)
+        }
+        return
+      }
+    }
   }
 }
 
@@ -1022,7 +1040,9 @@ function resetParagraphCharShape(stream: Buffer, paragraphIndex: number): Buffer
   newData.writeUInt32LE(0, 0)
   newData.writeUInt32LE(charShapeId, 4)
 
-  return replaceRecordData(stream, match.offset, newData)
+  const result = replaceRecordData(stream, match.offset, newData)
+  updateParaHeaderCharShapeCount(result, paragraphIndex, 1)
+  return result
 }
 
 function readParagraphCharShapeRef(data: Buffer): number {

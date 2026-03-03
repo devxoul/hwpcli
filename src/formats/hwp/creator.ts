@@ -116,11 +116,7 @@ function patchDocInfo(
     const recordBuf = stream.subarray(offset, offset + header.headerSize + header.size)
     if (header.tagId === TAG.FACE_NAME && font) {
       if (faceNameIndex % 7 === 0) {
-        const encodedName = Buffer.from(font, 'utf16le')
-        const length = Buffer.alloc(2)
-        length.writeUInt16LE(font.length, 0)
-        const newFaceName = Buffer.concat([Buffer.from([0x00]), length, encodedName])
-        parts.push(buildRecord(TAG.FACE_NAME, header.level, newFaceName))
+        parts.push(buildRecord(TAG.FACE_NAME, header.level, patchFaceNameData(data, font)))
       } else {
         parts.push(recordBuf)
       }
@@ -166,7 +162,9 @@ function buildSection0Stream(sectionDef: Buffer, bodyCharShapeRef: number): Buff
   columnCtrlChar.writeUInt16LE(0x0002, 14)
   const paraText = Buffer.concat([sectionCtrlChar, columnCtrlChar, Buffer.from([0x0d, 0x00])])
   const nChars = paraText.length / 2
-  const paraHeader = buildParaHeader(nChars, true)
+  const paraCharShape = buildParaCharShape(bodyCharShapeRef, nChars)
+  const charShapeCount = paraCharShape.length / 8
+  const paraHeader = buildParaHeader(nChars, true, charShapeCount)
   paraHeader.writeUInt32LE(0x00000004, 4)
   const dlocCtrlData = Buffer.alloc(16)
   controlIdBuffer('cold').copy(dlocCtrlData, 0)
@@ -174,7 +172,7 @@ function buildSection0Stream(sectionDef: Buffer, bodyCharShapeRef: number): Buff
   return Buffer.concat([
     buildRecord(TAG.PARA_HEADER, 0, paraHeader),
     buildRecord(TAG.PARA_TEXT, 1, paraText),
-    buildRecord(TAG.PARA_CHAR_SHAPE, 1, buildParaCharShape(bodyCharShapeRef, nChars)),
+    buildRecord(TAG.PARA_CHAR_SHAPE, 1, paraCharShape),
     buildRecord(TAG.PARA_LINE_SEG, 1, buildParaLineSegBuffer()),
     sectionDef,
     buildRecord(TAG.CTRL_HEADER, 1, dlocCtrlData),
@@ -186,14 +184,16 @@ function buildSection0Stream(sectionDef: Buffer, bodyCharShapeRef: number): Buff
 // [4:8] controlMask
 // [8:10] paraShapeRef
 // [10] styleRef
-// [16:20] nLineSegs
-function buildParaHeader(nChars: number, isLast: boolean): Buffer {
+// [12:14] charShapeCount (number of PARA_CHAR_SHAPE entries)
+// [16:18] lineSegCount
+function buildParaHeader(nChars: number, isLast: boolean, charShapeCount = 1): Buffer {
   const buf = Buffer.alloc(24)
   buf.writeUInt32LE(isLast ? (nChars | 0x80000000) >>> 0 : nChars, 0)
   buf.writeUInt32LE(0, 4)
   buf.writeUInt16LE(0, 8)
   buf.writeUInt8(0, 10)
-  buf.writeUInt32LE(1, 16)
+  buf.writeUInt16LE(charShapeCount, 12)
+  buf.writeUInt16LE(1, 16)
   return buf
 }
 
@@ -232,6 +232,16 @@ function parseStyleCharShapeRef(data: Buffer): number {
     return data.readUInt16LE(offset)
   }
   return 0
+}
+
+function patchFaceNameData(original: Buffer, font: string): Buffer {
+  const oldNameLen = original.readUInt16LE(1)
+  const trailingData = original.subarray(3 + oldNameLen * 2)
+  const encodedName = Buffer.from(font, 'utf16le')
+  const header = Buffer.alloc(3)
+  header.writeUInt8(original[0], 0)
+  header.writeUInt16LE(font.length, 1)
+  return Buffer.concat([header, encodedName, trailingData])
 }
 
 function createHwpFileHeader(compressed: boolean): Buffer {
