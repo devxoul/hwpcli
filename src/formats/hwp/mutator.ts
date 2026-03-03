@@ -902,7 +902,9 @@ function applySetFormat(
   }
 
   sectionStream = replaceRecordData(sectionStream, paraCharShapeMatch.offset, patchedParaCharShape)
-  updateParaHeaderCharShapeCount(sectionStream, paragraphIndex, patchedParaCharShape.length / 8)
+  const charShapeCount =
+    patchedParaCharShape.length >= 8 && patchedParaCharShape.length % 8 === 0 ? patchedParaCharShape.length / 8 : 1
+  updateParaHeaderCharShapeCount(sectionStream, paragraphIndex, charShapeCount)
 
   CFB.utils.cfb_add(cfb, docInfoPath, compressed ? compressStream(docInfoStream) : docInfoStream)
   CFB.utils.cfb_add(cfb, sectionPath, compressed ? compressStream(sectionStream) : sectionStream)
